@@ -1,31 +1,33 @@
 pipeline {
   agent any
   environment {
-    IMAGE = 'ldy88/petclinic'
-    DOCKERHUB_CRED = credentials('dockerhub-cred')
+    DH_USER = 'ldy88'
+    IMAGE = "${DH_USER}/petclinic"
   }
   stages {
-    stage('Maven Build') {
-      steps {
-        sh 'chmod +x mvnw && ./mvnw -B clean package -DskipTests'
-      }
+    stage('Build') {
+      steps { sh 'chmod +x mvnw && ./mvnw -B -DskipTests clean package' }
     }
     stage('Docker Build') {
-      steps {
-        sh 'docker build -t $IMAGE:$BUILD_NUMBER -t $IMAGE:latest .'
-      }
+      steps { sh 'docker build -t $IMAGE:$BUILD_NUMBER -t $IMAGE:latest .' }
     }
     stage('Docker Push') {
       steps {
-        sh 'echo $DOCKERHUB_CRED_PSW | docker login -u $DOCKERHUB_CRED_USR --password-stdin'
-        sh 'docker push $IMAGE:$BUILD_NUMBER'
-        sh 'docker push $IMAGE:latest'
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-cred', usernameVariable: 'U', passwordVariable: 'P')]) {
+          sh 'echo "$P" | docker login -u "$U" --password-stdin'
+          sh 'docker push $IMAGE:$BUILD_NUMBER'
+          sh 'docker push $IMAGE:latest'
+        }
       }
     }
-  }
-  post {
-    always {
-      sh 'docker logout || true'
+    stage('Deploy') {
+      steps {
+        withKubeConfig(credentialsId: 'k8s-token', serverUrl: 'https://kubernetes.default.svc', caCertificate: readFile('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt')) {
+          sh 'sed "s#$IMAGE:latest#$IMAGE:$BUILD_NUMBER#" deploy/petclinic.yml | kubectl apply -f -'
+          sh 'kubectl apply -f deploy/petclinic-ingress.yml'
+          sh 'kubectl rollout status deployment/petclinic -n was --timeout=300s'
+        }
+      }
     }
   }
 }
